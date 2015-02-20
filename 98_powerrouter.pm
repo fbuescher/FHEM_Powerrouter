@@ -24,7 +24,7 @@ my $POWERROUTER_LOGINPARAMS = "utf8=&authenticity_token=skyraver1&session[login]
 my $POWERROUTER_DATAURL = "https://www.mypowerrouter.com/aspects/history/energy_balance/26hour?scope=day&power_router\[0\]=%s&from_date=%s";
 my $POWERROUTER_DATAURL2 = "https://www.mypowerrouter.com/aspects/history/production/26hour?scope=day&aspect[perspective]=distribution&power_router[0]=%s";
 my $POWERROUTER_COOKIE = "~/skyperlcook.txt";
-my $POWERROUTER_DEBUG_ENABLED = false;
+#my $POWERROUTER_DEBUG_ENABLED = false;
 
 sub ##########################################
 powerrouter_Initialize($)
