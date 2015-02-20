@@ -13,9 +13,13 @@ Usage:
 1) Copy module to <FHEM_ROOT>/FHEM 
 
 2) add the following lines to your fhem.cfg
+
    define mypowerrouter powerrouter
+
    attr mypowerrouter login <username>
+
    attr mypowerrouter pass <password>
+
    attr mypowerrouter routerid <yourrouterid>
 
 3) force fhem to reload the .cfg
