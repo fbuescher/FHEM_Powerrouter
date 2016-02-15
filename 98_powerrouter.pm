@@ -1,12 +1,18 @@
 ##############################################
 # $Id: 98_powerrouter.pm by SkyRaVeR $
 #
-# apt-get install libcurl4-openssl-dev
+#
+# Needed dependencies:
+# apt-get install libcurl4-openssl-dev cpanminus curl 
 # cpanm install WWW::Curl::Easy
 # cpanm install JSON
 #
-# Last change: 2015-02-19 19:24
-# version 1.0.1b
+#
+# Changelog:
+# 15.02.2016 - adopted to new json response and fixed an exception which occured when no connectivity to mypowerrouter.com could be established
+#
+# Last change: 2016-02-15 17:04
+# version 1.0.2b
 ##############################################
 package main;
 
@@ -57,7 +63,7 @@ powerrouter_Define($$)
 
   # until we perform any checks set ourself to active...
   readingsSingleUpdate($hash,"state","active",1);
-  $hash->{VERSION} = "1.0.1b";
+  $hash->{VERSION} = "1.0.2b";
   return undef;
 }
 
@@ -125,10 +131,10 @@ sub powerrouter_retrieveData($$$) {
 	# prepare login URL
 	$POWERROUTER_LOGINPARAMS = sprintf("$POWERROUTER_LOGINPARAMS",AttrVal($hash->{NAME}, "login", ''),AttrVal($hash->{NAME}, "pass",''));
 
-        $curl->setopt(CURLOPT_HEADER,1);
-        $curl->setopt(CURLOPT_URL, 'https://www.mypowerrouter.com/session');
-     	$curl->setopt(CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/39.0.2171.65 Chrome/39.0.2171.65 Safari/537.36" );
-     	$curl->setopt(CURLOPT_POST, 1);
+    $curl->setopt(CURLOPT_HEADER,1);
+    $curl->setopt(CURLOPT_URL, 'https://www.mypowerrouter.com/session');
+    $curl->setopt(CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/39.0.2171.65 Chrome/39.0.2171.65 Safari/537.36" );
+    $curl->setopt(CURLOPT_POST, 1);
 	$curl->setopt(CURLOPT_POSTFIELDS, $POWERROUTER_LOGINPARAMS);
 	$curl->setopt(CURLOPT_COOKIESESSION, 1);
 	$curl->setopt(CURLOPT_COOKIEJAR, 'cookie-name');
@@ -151,6 +157,7 @@ sub powerrouter_retrieveData($$$) {
         } else {
                 # Error code, type of error, error message
                 #print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+				$response_body = "HTTP Basic: Access denied.";
 		readingsSingleUpdate($hash,"STATE","axs denied",1);
 		return undef;       
 	}
@@ -162,7 +169,7 @@ sub powerrouter_retrieveData($$$) {
 	$curl->setopt(CURLOPT_WRITEDATA,\$response_body);
 
 	# prepare logging
-	open (DATEI, ">$debugfilename") or die $!;
+	open (DATEI, ">$debugfilename"); #or die $!;
 
 	# Starts the actual request
 	$retcode = $curl->perform;
@@ -174,7 +181,8 @@ sub powerrouter_retrieveData($$$) {
                 # Error code, type of error, error message
 		print DATEI $response_body;
                 print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
-		readingsSingleUpdate($hash,"STATE","axs denied",1);
+			readingsSingleUpdate($hash,"STATE","axs denied",1);
+			$response_body = "HTTP Basic: Access denied.";
         }
 
 	close (DATEI);
@@ -203,6 +211,10 @@ sub powerrouter_parsejsonresponse($$) {
 	my $lasttogrid ="";
 	my $lastfromgrid ="";
 
+	# time
+	my $now = localtime();
+	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
+	
 	foreach $key (keys %{$decoded->{'power_routers'}} ){
     		my $item = $decoded->{'power_routers'}{$key};
 
@@ -213,24 +225,28 @@ sub powerrouter_parsejsonresponse($$) {
 
 
     		my $lastelem = 26;
-		# search first non null value since this must be the "current value"
+			# search first non null value since this must be the "current value"
 
-		my @latesttogridvalue;
+			my @latesttogridvalue;
     		my @latestfromgridvalue;	
 
-		for(my $i = 0; $i < @list_to_grid; $i++) {
-			@latestfromgridvalue = $list_from_grid[$i];
-			$lasttogrid = $latestfromgridvalue[0][1];
-			# there is a "null" as value for non present values...			
-			if ( length($lasttogrid) > 0 ) {$lastelem = scalar $i;}
-		}
+			for(my $i = 0; $i < @list_to_grid; $i++) {
+				@latestfromgridvalue = $list_from_grid[$i];
+				$lasttogrid = $latestfromgridvalue[0][1];
+				# there is a "null" as value for non present values...			
+				#if ( length($lasttogrid) > 0 ) {$lastelem = scalar $i;}
+								
+				if ($nowstr eq $latestfromgridvalue[0][0]) {
+					$lastelem = scalar $i;
+				}
+			}
 
 
     		@latesttogridvalue = $list_to_grid[$lastelem];
     		@latestfromgridvalue = $list_from_grid[$lastelem];	
 
-		$lasttogrid = $latesttogridvalue[0][1];
-		$lastfromgrid = $latestfromgridvalue[0][1];
+			$lasttogrid = $latesttogridvalue[0][1];
+			$lastfromgrid = $latestfromgridvalue[0][1];
 	}
 
 	readingsBeginUpdate($hash);
@@ -309,20 +325,16 @@ sub powerrouter_parsejsonresponse_distribution($$) {
 
 =pod
 =begin html
-
 <a name="powerrouter"></a>
 <h3>powerrouter</h3>
 <ul>
-
   Provides data from www.mypowerrouter.com in order to spice up some statistics :)
   <br><br>
-
   <a name="powerrouterdefine"></a>
   <b>Define</b>
   <ul>
     <code>define &lt;name&gt; powerrouter</code>
     <br><br>
-
     Example:
     <ul>
       <code>define mypowerrouter powerrouter</code><br>
@@ -332,10 +344,7 @@ sub powerrouter_parsejsonresponse_distribution($$) {
     </ul>
   </ul>
   <br>
-
   
 </ul>
-
 =end html
-
 =cut
