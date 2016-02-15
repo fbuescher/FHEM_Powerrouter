@@ -8,6 +8,11 @@ Currently the following data is read and provided to FHEM:
 - Power directly used [Wh]
 - Power to battery [Wh]
 
+Dependencies:
+   - apt-get install libcurl4-openssl-dev cpanminus curl 
+   - cpanm install WWW::Curl::Easy
+   - cpanm install JSON
+
 Usage:
 
 1) Copy module to <FHEM_ROOT>/FHEM 
