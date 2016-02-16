@@ -289,6 +289,11 @@ sub powerrouter_parsejsonresponse_distribution($$) {
 	my $lastdirectuse ="";
 	my $lastproduction ="";
 	my $lasttostorage ="";
+	
+		# time
+	my $now = localtime();
+	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
+	
 
 
 	foreach $key (keys %{$decoded->{'power_routers'}} ){
@@ -303,7 +308,7 @@ sub powerrouter_parsejsonresponse_distribution($$) {
 		# search first non null value
 
 		my @latestdirectusevalue;
-    		my @latestproductionvalue;
+    	my @latestproductionvalue;
 		my @latesttostoragevalue;
 		
 
@@ -311,13 +316,19 @@ sub powerrouter_parsejsonresponse_distribution($$) {
 			@latestproductionvalue = $list_production[$i];
 			$lastproduction = $latestproductionvalue[0][1];
 			# there is a "null" as value for non present values...			
-			if ( length($lastproduction) > 0 ) {$lastelem = scalar $i;}
+			# if ( length($lastproduction) > 0 ) {$lastelem = scalar $i;}
+			
+			if ($nowstr eq $latestproductionvalue[0][0]) {
+				#printf("its nOw: %s", $lasttogrid );
+				$lastelem = scalar $i;
+			}
+			
 		}
 
 
-    		@latestdirectusevalue = $list_direct_use[$lastelem];
-    		@latestproductionvalue = $list_production[$lastelem];
-    		@latesttostoragevalue = $list_to_storage[$lastelem];
+    	@latestdirectusevalue = $list_direct_use[$lastelem];
+    	@latestproductionvalue = $list_production[$lastelem];
+    	@latesttostoragevalue = $list_to_storage[$lastelem];
 	
 
 		$lastdirectuse = $latestdirectusevalue[0][1];
