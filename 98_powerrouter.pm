@@ -1,18 +1,17 @@
 ##############################################
 # $Id: 98_powerrouter.pm by SkyRaVeR $
 #
-#
-# Needed dependencies:
 # apt-get install libcurl4-openssl-dev cpanminus curl 
 # cpanm install WWW::Curl::Easy
 # cpanm install JSON
 #
 #
 # Changelog:
+# 16.02.2016 - fixed an issue which lead to crash fhem due to missing exception handling...
 # 15.02.2016 - adopted to new json response and fixed an exception which occured when no connectivity to mypowerrouter.com could be established
 #
-# Last change: 2016-02-15 17:04
-# version 1.0.2b
+# Last change: 2016-02-16 18:46
+# version 1.0.3b
 ##############################################
 package main;
 
@@ -26,11 +25,12 @@ use Time::Seconds;
 use JSON qw( decode_json );
 
 my $POWERROUTER_LOGINURL = "https://www.mypowerrouter.com/session";
-my $POWERROUTER_LOGINPARAMS = "utf8=&authenticity_token=skyraver1&session[login]=%s&session[password]=%s&session[remember_me]=1&commit=&responseContentDataType=json";
+my $POWERROUTER_LOGINPARAMS = "utf8=&authenticity_token=skyraver2&session[login]=%s&session[password]=%s&session[remember_me]=1&commit=&responseContentDataType=json";
 my $POWERROUTER_DATAURL = "https://www.mypowerrouter.com/aspects/history/energy_balance/26hour?scope=day&power_router\[0\]=%s&from_date=%s";
 my $POWERROUTER_DATAURL2 = "https://www.mypowerrouter.com/aspects/history/production/26hour?scope=day&aspect[perspective]=distribution&power_router[0]=%s";
 my $POWERROUTER_COOKIE = "~/skyperlcook.txt";
 #my $POWERROUTER_DEBUG_ENABLED = false;
+
 
 sub ##########################################
 powerrouter_Initialize($)
@@ -63,7 +63,7 @@ powerrouter_Define($$)
 
   # until we perform any checks set ourself to active...
   readingsSingleUpdate($hash,"state","active",1);
-  $hash->{VERSION} = "1.0.2b";
+  $hash->{VERSION} = "1.0.3b";
   return undef;
 }
 
@@ -95,7 +95,8 @@ powerrouter_GetUpdate($)
 	my ($hash) = @_;
 	my $name = $hash->{NAME};
 
-	prepare_retrieveData($hash);
+	eval { prepare_retrieveData($hash); }; warn $@ if $@;
+	
 	# re-schedule stuff for next reading
 	InternalTimer(gettimeofday()+(60*60), "powerrouter_GetUpdate", $hash, 1);
 }
@@ -113,13 +114,22 @@ sub prepare_retrieveData($) {
 	# get from/to grid stuff
 	$url = sprintf("$POWERROUTER_DATAURL",AttrVal($hash->{NAME}, "routerid", ''),$dateyesterday); 
 	$debugfilename = $now->strftime('%Y-%m-%dT%R').".log";
-	powerrouter_parsejsonresponse($hash,powerrouter_retrieveData($hash,$url,$debugfilename));
-
+	
+	my $websiteresponse = powerrouter_retrieveData($hash,$url,$debugfilename);
+	
+	
+	#parse stuff
+	
+	eval { powerrouter_parsejsonresponse($hash,$websiteresponse); }; warn $@ if $@;
+	
+	
 	# get distribution
 	$url =  sprintf("$POWERROUTER_DATAURL2",AttrVal($hash->{NAME}, "routerid", ''));
-	$debugfilename = $now->strftime('%Y-%m-%dT%R')."_dist.log";
-	powerrouter_parsejsonresponse_distribution($hash,powerrouter_retrieveData($hash,$url,$debugfilename));
-
+	$debugfilename = $now->strftime('%Y-%m-%dT%R')."_dist.log";	
+	
+	$websiteresponse = powerrouter_retrieveData($hash,$url,$debugfilename);
+	
+	eval { powerrouter_parsejsonresponse_distribution($hash,$websiteresponse); }; warn $@ if $@;
 
 }
 
@@ -141,25 +151,25 @@ sub powerrouter_retrieveData($$$) {
 	$curl->setopt(CURLOPT_COOKIEFILE, "~/skyperlcook.txt" );
 	$curl->setopt( CURLOPT_FOLLOWLOCATION, 1 );
 
-        # A filehandle, reference to a scalar or reference to a typeglob can be used here.
-        my $response_body;
-        $curl->setopt(CURLOPT_WRITEDATA,\$response_body);
+	# A filehandle, reference to a scalar or reference to a typeglob can be used here.
+	my $response_body;
+	$curl->setopt(CURLOPT_WRITEDATA,\$response_body);
 
-        # Starts the actual request
-        my $retcode = $curl->perform;
+	# Starts the actual request
+	my $retcode = $curl->perform;
 
-        # Looking at the results...
-        if ($retcode == 0) {
-               # print("Transfer went ok\n");
-                my $response_code = $curl->getinfo(CURLINFO_HTTP_CODE);
-                # judge result and next action based on $response_code
-               # print("Received response: $response_body\n");
-        } else {
-                # Error code, type of error, error message
-                #print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
-				$response_body = "HTTP Basic: Access denied.";
-		readingsSingleUpdate($hash,"STATE","axs denied",1);
-		return undef;       
+	# Looking at the results...
+	if ($retcode == 0) {
+		# print("Transfer went ok\n");
+		# my $response_code = $curl->getinfo(CURLINFO_HTTP_CODE);
+		# judge result and next action based on $response_code
+		# print("Received response: $response_body\n");
+	} else {
+			# Error code, type of error, error message
+			#print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+			$response_body = "HTTP Basic: Access denied.";
+			readingsSingleUpdate($hash,"STATE","axs denied",1);
+			return undef;       
 	}
 
 	# get the data after a successful auth
@@ -204,6 +214,9 @@ sub powerrouter_parsejsonresponse($$) {
 		$hash->{state} = "axs denied";
 		return undef;
 	}	
+	
+	
+	
 	my $decoded = decode_json($json);
 
 	my $key ="";
@@ -236,7 +249,9 @@ sub powerrouter_parsejsonresponse($$) {
 				# there is a "null" as value for non present values...			
 				#if ( length($lasttogrid) > 0 ) {$lastelem = scalar $i;}
 								
+				#printf("Wert:, %s , %d !\n",$nowstr,$lasttogrid );
 				if ($nowstr eq $latestfromgridvalue[0][0]) {
+					#printf("its nOw: %s", $lasttogrid );
 					$lastelem = scalar $i;
 				}
 			}
