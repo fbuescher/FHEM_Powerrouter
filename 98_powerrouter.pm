@@ -4,14 +4,18 @@
 # apt-get install libcurl4-openssl-dev cpanminus curl 
 # cpanm install WWW::Curl::Easy
 # cpanm install JSON
+# adjust the logging path in $POWERROUTER_TEMPFILE_FOLDER and ensure the directory exists! in this case it points to <yourfheminstallation/log/powerrouter>
 #
 #
 # Changelog:
+# 16.06.2016 - fixed brainlag bug in sprintf
+# 15.06.2016 - reworked lots of original code. increased readability and more error are caught; prepared battery stats 
+# 09.06.2016 - fixed missing variable and crash; added configure section for temporary json response from website
 # 16.02.2016 - fixed an issue which lead to crash fhem due to missing exception handling...
 # 15.02.2016 - adopted to new json response and fixed an exception which occured when no connectivity to mypowerrouter.com could be established
 #
-# Last change: 2016-02-16 18:46
-# version 1.0.3b
+# Last change: 2016-16-09 18:46
+# version 1.1.0b
 ##############################################
 package main;
 
@@ -24,12 +28,24 @@ use Time::Seconds;
 
 use JSON qw( decode_json );
 
+##############################################
+# 
+# configure section
+#
+##############################################
+
+my $POWERROUTER_TEMPFILE_FOLDER = "log/powerrouter/";
+my $POWERROUTER_DEBUG = 0;
+
+# DO NOT TOUCH ANYTHING BELOW UNLESS YOU KNOW WHAT YOU DO !
 my $POWERROUTER_LOGINURL = "https://www.mypowerrouter.com/session";
-my $POWERROUTER_LOGINPARAMS = "utf8=&authenticity_token=skyraver2&session[login]=%s&session[password]=%s&session[remember_me]=1&commit=&responseContentDataType=json";
-my $POWERROUTER_DATAURL = "https://www.mypowerrouter.com/aspects/history/energy_balance/26hour?scope=day&power_router\[0\]=%s&from_date=%s";
-my $POWERROUTER_DATAURL2 = "https://www.mypowerrouter.com/aspects/history/production/26hour?scope=day&aspect[perspective]=distribution&power_router[0]=%s";
-my $POWERROUTER_COOKIE = "~/skyperlcook.txt";
-#my $POWERROUTER_DEBUG_ENABLED = false;
+my $POWERROUTER_LOGINPARAMS = "utf8=&authenticity_token=%s&session[login]=%s&session[password]=%s&session[remember_me]=1&commit=&responseContentDataType=json";
+my $POWERROUTER_LOGINRNDTOKEN = "";
+
+my $POWERROUTER_URL_PRODUCTION = "https://www.mypowerrouter.com/aspects/history/production/1hour?scope=hour&aspect[perspective]=total&power_router[0]=%s&from_date=%s";
+my $POWERROUTER_URL_CONSUMPTION = "https://www.mypowerrouter.com/aspects/history/consumption/1hour?scope=hour&aspect[perspective]=total&power_router[0]=%s&from_date=%s"; 
+#my $POWERROUTER_URL_BATTERY = "https://www.mypowerrouter.com/aspects/history/battery_state/60minute?scope=hour&power_router[0]=%s&from_date=%s"; 
+
 
 
 sub ##########################################
@@ -61,9 +77,13 @@ powerrouter_Define($$)
   # start timer since we need to poll data from website...
   InternalTimer(gettimeofday()+$firstschedule, "powerrouter_GetUpdate", $hash, 0);
 
+  #create random auth token
+  my @chars = ("A".."Z", "a".."z");
+  $POWERROUTER_LOGINRNDTOKEN .= $chars[rand @chars] for 1..9;
+ 
   # until we perform any checks set ourself to active...
   readingsSingleUpdate($hash,"state","active",1);
-  $hash->{VERSION} = "1.0.3b";
+  $hash->{VERSION} = "1.1.0b";
   return undef;
 }
 
@@ -84,7 +104,8 @@ powerrouter_Get($@)
 	my $setList = AttrVal($hash->{name}, "setList", " ");
 	return "Unknown argument ?, choose one of $setList" if($a[0] eq "?");
 
-	prepare_retrieveData($hash);
+	eval { powerrouter_GetPowerConsumption($hash); }; warn $@ if $@;
+	eval { powerrouter_GetPowerProduction($hash); }; warn $@ if $@;
 
  	return $hash->{NAME};
 }
@@ -95,51 +116,72 @@ powerrouter_GetUpdate($)
 	my ($hash) = @_;
 	my $name = $hash->{NAME};
 
-	eval { prepare_retrieveData($hash); }; warn $@ if $@;
+	eval { powerrouter_GetPowerConsumption($hash); }; warn $@ if $@;
+	eval { powerrouter_GetPowerProduction($hash); }; warn $@ if $@;
 	
 	# re-schedule stuff for next reading
 	InternalTimer(gettimeofday()+(60*60), "powerrouter_GetUpdate", $hash, 1);
 }
 
-sub prepare_retrieveData($) {
+sub ##########################################
+powerrouter_GetPowerConsumption($)
+{
 	my ($hash) = @_;
 
-	#get yesterday
-	my $now = localtime();
-	my $yesterday = $now - ONE_HOUR*($now->hour + 12);
-	my $dateyesterday = $yesterday->strftime('%Y-%m-%dT23:00:00Z');
-	my $url = "";
-	my $debugfilename = "";
+	
+	# time
+	my $now = localtime(time - 3600);
+	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
 
-	# get from/to grid stuff
-	$url = sprintf("$POWERROUTER_DATAURL",AttrVal($hash->{NAME}, "routerid", ''),$dateyesterday); 
-	$debugfilename = $now->strftime('%Y-%m-%dT%R').".log";
+	# fill url with routerid and timestamp
+	my $url = sprintf("$POWERROUTER_URL_CONSUMPTION",AttrVal($hash->{NAME}, "routerid", ''),$nowstr); 
 	
-	my $websiteresponse = powerrouter_retrieveData($hash,$url,$debugfilename);
+	# retrieve data from site
+	my $websiteresponse = powerrouter_retrieveData($hash,$url);
 	
+	if (!defined $websiteresponse) {
+		return undef;
+	}
 	
-	#parse stuff
-	
-	eval { powerrouter_parsejsonresponse($hash,$websiteresponse); }; warn $@ if $@;
-	
-	
-	# get distribution
-	$url =  sprintf("$POWERROUTER_DATAURL2",AttrVal($hash->{NAME}, "routerid", ''));
-	$debugfilename = $now->strftime('%Y-%m-%dT%R')."_dist.log";	
-	
-	$websiteresponse = powerrouter_retrieveData($hash,$url,$debugfilename);
-	
-	eval { powerrouter_parsejsonresponse_distribution($hash,$websiteresponse); }; warn $@ if $@;
+	# parse response and update readings
+	powerrouter_parsejsonresponse($hash,$websiteresponse);
 
+	#if ($POWERROUTER_DEBUG > 0) powerrouter_log2file($websiteresponse);
+	
 }
 
-sub powerrouter_retrieveData($$$) {
-	my ($hash,$url,$debugfilename) = @_;
+sub ##########################################
+powerrouter_GetPowerProduction($)
+{
+	my ($hash) = @_;
+	
+	# time
+	my $now = localtime(time - 3600);
+	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
+
+	# fill url with routerid and timestamp
+	my $url = sprintf("$POWERROUTER_URL_PRODUCTION",AttrVal($hash->{NAME}, "routerid", ''),$nowstr); 
+	
+	# retrieve data from site
+	my $websiteresponse = powerrouter_retrieveData($hash,$url);
+	
+	if (!defined $websiteresponse) {
+		return undef;
+	}
+	
+	# parse response and update readings
+	powerrouter_parsejsonresponse($hash,$websiteresponse);
+
+	#if ($POWERROUTER_DEBUG > 0) powerrouter_log2file($websiteresponse);	
+}
+
+
+sub powerrouter_retrieveData($$) {
+	my ($hash,$url) = @_;
 	my $curl = WWW::Curl::Easy->new;
 
-
 	# prepare login URL
-	$POWERROUTER_LOGINPARAMS = sprintf("$POWERROUTER_LOGINPARAMS",AttrVal($hash->{NAME}, "login", ''),AttrVal($hash->{NAME}, "pass",''));
+	$POWERROUTER_LOGINPARAMS = sprintf("$POWERROUTER_LOGINPARAMS",$POWERROUTER_LOGINRNDTOKEN,AttrVal($hash->{NAME}, "login", ''),AttrVal($hash->{NAME}, "pass",''));
 
     $curl->setopt(CURLOPT_HEADER,1);
     $curl->setopt(CURLOPT_URL, 'https://www.mypowerrouter.com/session');
@@ -149,7 +191,7 @@ sub powerrouter_retrieveData($$$) {
 	$curl->setopt(CURLOPT_COOKIESESSION, 1);
 	$curl->setopt(CURLOPT_COOKIEJAR, 'cookie-name');
 	$curl->setopt(CURLOPT_COOKIEFILE, "~/skyperlcook.txt" );
-	$curl->setopt( CURLOPT_FOLLOWLOCATION, 1 );
+	$curl->setopt(CURLOPT_FOLLOWLOCATION, 1 );
 
 	# A filehandle, reference to a scalar or reference to a typeglob can be used here.
 	my $response_body;
@@ -178,173 +220,74 @@ sub powerrouter_retrieveData($$$) {
 	$curl->setopt(CURLOPT_URL,$url);
 	$curl->setopt(CURLOPT_WRITEDATA,\$response_body);
 
-	# prepare logging
-	open (DATEI, ">$debugfilename"); #or die $!;
-
 	# Starts the actual request
 	$retcode = $curl->perform;
 
         # Looking at the results...
         if ($retcode == 0) {
-		print DATEI $response_body;
+
         } else {
-                # Error code, type of error, error message
-		print DATEI $response_body;
-                print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
+            # Error code, type of error, error message
+
+            print("An error happened: $retcode ".$curl->strerror($retcode)." ".$curl->errbuf."\n");
 			readingsSingleUpdate($hash,"STATE","axs denied",1);
 			$response_body = "HTTP Basic: Access denied.";
         }
-
-	close (DATEI);
 
 	return $response_body;
 }
 
 
-
-
 sub powerrouter_parsejsonresponse($$) {
 
 	my ($hash, $json) = @_;
-	
-	#print $json;
+
 	$json =~ s/^\s+//; #remove leading spaces
 	$json =~ s/\s+$//; #remove trailing spaces
 	if ($json eq 'HTTP Basic: Access denied.') {
 		$hash->{state} = "axs denied";
 		return undef;
 	}	
+	#printf("RESPONSE: %s\n",$json);
 	
-	
-	
+
+	# decode response...
 	my $decoded = decode_json($json);
-
-	my $key ="";
-
-	my $lasttogrid ="";
-	my $lastfromgrid ="";
-
-	# time
-	my $now = localtime();
-	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
 	
-	foreach $key (keys %{$decoded->{'power_routers'}} ){
-    		my $item = $decoded->{'power_routers'}{$key};
+	# perform error checks
+	#my $error = $decoded->{'status'};
+	#if (!defined $error) {
+	#	return undef;
+	#}
+	#printf("RESPONSE2: %s\n",$json);
 
-		#### to grid ####
-
-    		my @list_to_grid = @{$item->{'history'}{'to_grid'}{'data'} };
-    		my @list_from_grid = @{$item->{'history'}{'from_grid'}{'data'} };
-
-
-    		my $lastelem = 26;
-			# search first non null value since this must be the "current value"
-
-			my @latesttogridvalue;
-    		my @latestfromgridvalue;	
-
-			for(my $i = 0; $i < @list_to_grid; $i++) {
-				@latestfromgridvalue = $list_from_grid[$i];
-				$lasttogrid = $latestfromgridvalue[0][1];
-				# there is a "null" as value for non present values...			
-				#if ( length($lasttogrid) > 0 ) {$lastelem = scalar $i;}
-								
-				#printf("Wert:, %s , %d !\n",$nowstr,$lasttogrid );
-				if ($nowstr eq $latestfromgridvalue[0][0]) {
-					#printf("its nOw: %s", $lasttogrid );
-					$lastelem = scalar $i;
-				}
-			}
-
-
-    		@latesttogridvalue = $list_to_grid[$lastelem];
-    		@latestfromgridvalue = $list_from_grid[$lastelem];	
-
-			$lasttogrid = $latesttogridvalue[0][1];
-			$lastfromgrid = $latestfromgridvalue[0][1];
-	}
-
+	# ready set go...
 	readingsBeginUpdate($hash);
-	readingsBulkUpdate($hash, "power_from_grid", $lastfromgrid );
-	readingsBulkUpdate($hash, "power_to_grid", $lasttogrid );
-	readingsEndUpdate($hash, 1);
-}
-
-#https://www.mypowerrouter.com/aspects/history/production/26hour?scope=day&aspect[perspective]=distribution&power_router[0]=routerid
-sub powerrouter_parsejsonresponse_distribution($$) {
-
-	my ($hash, $json) = @_;
 	
-	#print $json;
-	$json =~ s/^\s+//; #remove leading spaces
-	$json =~ s/\s+$//; #remove trailing spaces
-	if ($json eq 'HTTP Basic: Access denied.') {
-		$hash->{state} = "axs denied";
-		return undef;
-	}	
-	my $decoded = decode_json($json);
-
-	my $key ="";
-
-	my $lastdirectuse ="";
-	my $lastproduction ="";
-	my $lasttostorage ="";
-	
-		# time
-	my $now = localtime();
-	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
-	
-
-
-	foreach $key (keys %{$decoded->{'power_routers'}} ){
-    		my $item = $decoded->{'power_routers'}{$key};
-
-
-    		my @list_direct_use = @{$item->{'history'}{'direct_use'}{'data'} };
-    		my @list_production = @{$item->{'history'}{'production'}{'data'} };
-    		my @list_to_storage = @{$item->{'history'}{'to_storage'}{'data'} };
-
-    		my $lastelem = 26;
-		# search first non null value
-
-		my @latestdirectusevalue;
-    	my @latestproductionvalue;
-		my @latesttostoragevalue;
+	foreach my $key (keys %{$decoded->{'power_routers'}} ){
+		my $item = $decoded->{'power_routers'}{$key};
+		#printf("RESPONSE3: %s\n",$json);
+		my @list_response;
 		
-
-		for(my $i = 0; $i < @list_production; $i++) {
-			@latestproductionvalue = $list_production[$i];
-			$lastproduction = $latestproductionvalue[0][1];
-			# there is a "null" as value for non present values...			
-			# if ( length($lastproduction) > 0 ) {$lastelem = scalar $i;}
-			
-			if ($nowstr eq $latestproductionvalue[0][0]) {
-				#printf("its nOw: %s", $lasttogrid );
-				$lastelem = scalar $i;
+		# check for contents...
+		# $val contains the string like direct_use etc
+		foreach my $val (keys $item->{'history'}) {
+			#printf("VALUE: %s \n",$val);		
+			eval { @list_response = @{$item->{'history'}{$val}{'data'} }; };
+			if($@) {
+				printf("[POWERROUTER] ERROR -> %s \n",$@); 
+				readingsEndUpdate($hash, 1);
+				return undef;
 			}
-			
+			#if ($POWERROUTER_DEBUG > 0) printf("STUFF: %s : %s <-> %s \n",$val,$list_response[0][0],$list_response[0][1]);	
+			# update data in fhem...
+			readingsBulkUpdate($hash, $val, $list_response[0][1] );		
 		}
-
-
-    	@latestdirectusevalue = $list_direct_use[$lastelem];
-    	@latestproductionvalue = $list_production[$lastelem];
-    	@latesttostoragevalue = $list_to_storage[$lastelem];
 	
-
-		$lastdirectuse = $latestdirectusevalue[0][1];
-		$lastproduction = $latestproductionvalue[0][1];
-		$lasttostorage = $latesttostoragevalue[0][1];
-
 	}
 
-	readingsBeginUpdate($hash);
-	readingsBulkUpdate($hash, "power_from_sun", $lastproduction );
-	readingsBulkUpdate($hash, "power_to_battery", $lasttostorage );
-	readingsBulkUpdate($hash, "power_direct_use", $lastdirectuse );
 	readingsEndUpdate($hash, 1);
 }
-
-
 
 
 1;
