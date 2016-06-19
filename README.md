@@ -1,5 +1,5 @@
 # FHEM_Powerrouter
-Custom module which reads data from https://mypowerrouter.com and provides them as readings in FHEM
+Custom module which reads data from https://mypowerrouter.com (nedap powerrouter) and provides them as readings in FHEM
 This module is intended to run within the FHEM-Software. 
 Currently the following data is read and provided to FHEM:
 - Power to grid [Wh]
@@ -7,6 +7,9 @@ Currently the following data is read and provided to FHEM:
 - Power produced by Solarpanel [Wh]
 - Power directly used [Wh]
 - Power to battery [Wh]
+- Overall power consumption [Wh]
+- Overall power production [Wh]
+
 
 Dependencies:
    - apt-get install libcurl4-openssl-dev cpanminus curl 
@@ -27,7 +30,8 @@ Usage:
 
    attr mypowerrouter routerid <yourrouterid>
 
-3) force fhem to reload the .cfg
+3) Adjust logging path in module ($POWERROUTER_TEMPFILE_FOLDER)
+4) force fhem to reload the .cfg
 
 Data is retrieved from the website every hour.
 
