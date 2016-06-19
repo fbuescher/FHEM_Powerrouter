@@ -31,6 +31,7 @@ Usage:
    attr mypowerrouter routerid <yourrouterid>
 
 3) Adjust logging path in module ($POWERROUTER_TEMPFILE_FOLDER)
+
 4) force fhem to reload the .cfg
 
 Data is retrieved from the website every hour.
