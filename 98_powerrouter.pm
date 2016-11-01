@@ -348,7 +348,7 @@ sub powerrouter_parsejsonresponse($$) {
 			#printf("VALUE: %s \n",$val);		
 			eval { @list_response = @{$item->{'history'}{$val}{'data'} }; };
 			if($@) {
-				printf("[POWERROUTER] ERROR -> %s \n",$@); 
+				#printf("[POWERROUTER] ERROR -> %s \n",$@); 
 				readingsEndUpdate($hash, 1);
 				return undef;
 			}
