@@ -6,16 +6,20 @@
 # cpanm install JSON
 # adjust the logging path in $POWERROUTER_TEMPFILE_FOLDER and ensure the directory exists! in this case it points to <yourfheminstallation/log/powerrouter>
 #
+# ToDo: 
+# - add current values
+# - add detailed battery info
 #
 # Changelog:
+# 01.11.2016 - added first version of battery state
 # 16.06.2016 - fixed brainlag bug in sprintf
 # 15.06.2016 - reworked lots of original code. increased readability and more error are caught; prepared battery stats 
 # 09.06.2016 - fixed missing variable and crash; added configure section for temporary json response from website
 # 16.02.2016 - fixed an issue which lead to crash fhem due to missing exception handling...
 # 15.02.2016 - adopted to new json response and fixed an exception which occured when no connectivity to mypowerrouter.com could be established
 #
-# Last change: 2016-16-09 18:46
-# version 1.1.0b
+# Last change: 2016-01-11 23:38 UTC+1
+# version 1.1.1b
 ##############################################
 package main;
 
@@ -44,9 +48,10 @@ my $POWERROUTER_LOGINRNDTOKEN = "";
 
 my $POWERROUTER_URL_PRODUCTION = "https://www.mypowerrouter.com/aspects/history/production/1hour?scope=hour&aspect[perspective]=total&power_router[0]=%s&from_date=%s";
 my $POWERROUTER_URL_CONSUMPTION = "https://www.mypowerrouter.com/aspects/history/consumption/1hour?scope=hour&aspect[perspective]=total&power_router[0]=%s&from_date=%s"; 
-#my $POWERROUTER_URL_BATTERY = "https://www.mypowerrouter.com/aspects/history/battery_state/60minute?scope=hour&power_router[0]=%s&from_date=%s"; 
+my $POWERROUTER_URL_BATTERY = "https://www.mypowerrouter.com/aspects/history/battery_state/60minute?scope=hour&power_router[0]=%s&from_date=%s"; 
 
-
+# unit is [min] - if > 0 it will update battery data every x min
+my $POWERROUTER_BATTERY_UPDATE_INTERVAL = 0;
 
 sub ##########################################
 powerrouter_Initialize($)
@@ -56,7 +61,7 @@ powerrouter_Initialize($)
   $hash->{SetFn}     = "powerrouter_Set";
   $hash->{GetFn}     = "powerrouter_Get";
   $hash->{DefFn}     = "powerrouter_Define";
-  $hash->{AttrList}  = "setList login pass routerid ". $readingFnAttributes;
+  $hash->{AttrList}  = "setList login pass routerid battery_update_interval ". $readingFnAttributes;
 }
 
 sub ##########################################
@@ -82,10 +87,32 @@ powerrouter_Define($$)
   $POWERROUTER_LOGINRNDTOKEN .= $chars[rand @chars] for 1..9;
  
   # until we perform any checks set ourself to active...
-  readingsSingleUpdate($hash,"state","active",1);
-  $hash->{VERSION} = "1.1.0b";
+  readingsSingleUpdate($hash,"STATE","active",1);
+
+  # dirty workaround
+  InternalTimer(gettimeofday()+1, "powerrouter_initphase2", $hash, 0);
+
+  $hash->{VERSION} = "1.1.1b";
   return undef;
 }
+
+###################################
+sub
+powerrouter_initphase2($) {
+	my ($hash) = @_;	
+
+	# remove timer since it was just needed to leave the define and get called to set up our notification filter...
+	RemoveInternalTimer("powerrouter_initphase2");
+
+
+	$POWERROUTER_BATTERY_UPDATE_INTERVAL = AttrVal($hash->{NAME}, "battery_update_interval", 0);
+	
+	if ($POWERROUTER_BATTERY_UPDATE_INTERVAL > 0) {
+		InternalTimer(gettimeofday()+(60*$POWERROUTER_BATTERY_UPDATE_INTERVAL), "powerrouter_GetBatteryUpdate", $hash, 1);	
+	}
+
+}
+
 
 ###################################
 sub
@@ -106,6 +133,10 @@ powerrouter_Get($@)
 
 	eval { powerrouter_GetPowerConsumption($hash); }; warn $@ if $@;
 	eval { powerrouter_GetPowerProduction($hash); }; warn $@ if $@;
+	# only retrieve data if a battery is present...	
+	if ($POWERROUTER_BATTERY_UPDATE_INTERVAL > 0) {
+		eval { powerrouter_GetBatteyChargeState($hash); }; warn $@ if $@;
+	}
 
  	return $hash->{NAME};
 }
@@ -118,9 +149,25 @@ powerrouter_GetUpdate($)
 
 	eval { powerrouter_GetPowerConsumption($hash); }; warn $@ if $@;
 	eval { powerrouter_GetPowerProduction($hash); }; warn $@ if $@;
+	if ($POWERROUTER_BATTERY_UPDATE_INTERVAL > 0) {
+		eval { powerrouter_GetBatteyChargeState($hash); }; warn $@ if $@;
+	}
 	
 	# re-schedule stuff for next reading
 	InternalTimer(gettimeofday()+(60*60), "powerrouter_GetUpdate", $hash, 1);
+}
+sub ##########################################
+powerrouter_GetBatteryUpdate($)
+{
+	my ($hash) = @_;
+	my $name = $hash->{NAME};
+
+	if ($POWERROUTER_BATTERY_UPDATE_INTERVAL > 0) {
+		eval { powerrouter_GetBatteyChargeState($hash); }; warn $@ if $@;
+	
+		# re-schedule stuff for next reading
+		InternalTimer(gettimeofday()+(60*$POWERROUTER_BATTERY_UPDATE_INTERVAL), "powerrouter_GetBatteryUpdate", $hash, 1);
+	}
 }
 
 sub ##########################################
@@ -174,6 +221,32 @@ powerrouter_GetPowerProduction($)
 
 	#if ($POWERROUTER_DEBUG > 0) powerrouter_log2file($websiteresponse);	
 }
+
+sub ##########################################
+powerrouter_GetBatteyChargeState($)
+{
+	my ($hash) = @_;
+	
+	# time
+	my $now = localtime(time - 3600);
+	my $nowstr = $now->strftime('%Y-%m-%dT%H:00:00Z');
+
+	# fill url with routerid and timestamp
+	my $url = sprintf("$POWERROUTER_URL_BATTERY",AttrVal($hash->{NAME}, "routerid", ''),$nowstr); 
+	
+	# retrieve data from site
+	my $websiteresponse = powerrouter_retrieveData($hash,$url);
+	
+	if (!defined $websiteresponse) {
+		return undef;
+	}
+	
+	# parse response and update readings
+	powerrouter_parsejsonresponse($hash,$websiteresponse);
+
+	#if ($POWERROUTER_DEBUG > 0) powerrouter_log2file($websiteresponse);	
+}
+
 
 
 sub powerrouter_retrieveData($$) {
@@ -263,7 +336,7 @@ sub powerrouter_parsejsonresponse($$) {
 
 	# ready set go...
 	readingsBeginUpdate($hash);
-	
+
 	foreach my $key (keys %{$decoded->{'power_routers'}} ){
 		my $item = $decoded->{'power_routers'}{$key};
 		#printf("RESPONSE3: %s\n",$json);
@@ -279,16 +352,15 @@ sub powerrouter_parsejsonresponse($$) {
 				readingsEndUpdate($hash, 1);
 				return undef;
 			}
-			#if ($POWERROUTER_DEBUG > 0) printf("STUFF: %s : %s <-> %s \n",$val,$list_response[0][0],$list_response[0][1]);	
+			# printf("STUFF: %s : %s <-> %s \n",$val,$list_response[0][0],$list_response[0][1]);	
 			# update data in fhem...
 			readingsBulkUpdate($hash, $val, $list_response[0][1] );		
 		}
 	
 	}
-
+	readingsBulkUpdate($hash, "STATE", "active");
 	readingsEndUpdate($hash, 1);
 }
-
 
 1;
 
@@ -309,7 +381,8 @@ sub powerrouter_parsejsonresponse($$) {
       <code>define mypowerrouter powerrouter</code><br>
       <code>attr mypowerrouter login &lt;username&gt;</code><br>
       <code>attr mypowerrouter pass &lt;password&gt;</code><br>
-      <code>attr mypowerrouter routerid &lt;idofrouter&gt;</code><br>
+      <code>attr mypowerrouter routerid &lt;id_of_router&gt;</code><br>
+      <code>attr mypowerrouter battery_update_interval &lt;ival_in_min&gt;</code><br>
     </ul>
   </ul>
   <br>
