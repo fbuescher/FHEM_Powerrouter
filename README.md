@@ -10,6 +10,8 @@ Currently the following data is read and provided to FHEM:
 - Overall power consumption [Wh]
 - Overall power production [Wh]
 - Current state of charge of battery (if available) [%]
+- timedrift in Minutes (to monitor the really bad "Realtime" Clock)
+-
 
 
 Dependencies:
@@ -32,6 +34,8 @@ Usage:
    attr mypowerrouter routerid <yourrouterid>
    
    attr mypowerrouter battery_update_interval <ival_in_minutes>
+   
+   attr mypowerrouter delay <delay_in_minutes>
 
 3) Adjust logging path in module ($POWERROUTER_TEMPFILE_FOLDER)
 
@@ -39,4 +43,6 @@ Usage:
 
 Data is retrieved from the website every hour.
 If battery_update_interval is defined battery values are retrieved by given interval (0 equals disabled)
+
+have a look at the timedrift_minutes Reading. This indicates how off the powerrouter-clock is. If It's 0, set delay to 5. This will shedule the update to 5 minutes after a full hour. If it's 5, either correct the clock or set delay to 10.
 
